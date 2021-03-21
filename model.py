@@ -26,7 +26,7 @@ class AveragingWeights(nn.Module):
             if bottleneck_dim is None:
                 self.weights = nn.Linear(feature_dim, n_annotators)
             else:
-                self.weights = nn.Sequential(nn.Linear(feature_dim, bottleneck_dim), nn.Linear(bottleneck_dim, n_annotators))
+                self.weights = nn.Sequential(nn.ReLU(), nn.Linear(feature_dim, bottleneck_dim), nn.Linear(bottleneck_dim, n_annotators))
         else:
             raise IndexError("weight type must be 'W' or 'I'.")
 
@@ -45,22 +45,24 @@ class DoctorNet(nn.Module):
         self.annotators = nn.Parameter(torch.stack([torch.randn(feature_dim, n_classes) for _ in range(n_annotators)]), requires_grad=True)
         self.weights = AveragingWeights(n_annotators, weight_type, feature_dim, bottleneck_dim)
         
-    def forward(self, x, mask=None):
+    def forward(self, x, pred=False, weight=False):
         feature = self.feature_extractor(x)
         decisions = torch.einsum('ik,jkl->ijl', feature, self.annotators)
-
-        if mask is None:
+        weights = self.weights(feature)
+        if weight:
+            decisions = decisions * weights[None, :, None]
+        if pred:
+            decisions = torch.sum(decisions, axis=1)
             return decisions
         else:
-            weights = self.weights(feature)
-            predictions = decisions * weights[None, :, None]
+            return decisions, weights
+            # predictions = decisions * weights[None, :, None]
 
-            predictions = predictions.masked_fill(~mask[:, :, None], 0)
-            predictions = torch.sum(predictions, axis=1)
+            # predictions = predictions.masked_fill(~mask[:, :, None], 0)
+            # predictions = torch.sum(predictions, axis=1)
 
-            weights = weights.masked_fill(~mask, 0)
-            weights = torch.sum(weights, axis=-1)
+            # weights = weights.masked_fill(~mask, 0)
+            # weights = torch.sum(weights, axis=-1)
 
-            predictions = predictions / weights[:, None]
-            return predictions
+            # return predictions, weights
 
