@@ -3,14 +3,13 @@ import json
 import copy
 import torch
 import argparse
-import importlib
 import numpy as np
 import torch.nn as nn
 from torch.backends import cudnn
 from pathlib import Path
 from torch.optim import Adam
 from torch.utils.data import DataLoader
-import torchvision.transforms as transforms
+from torch.nn import functional as F
 from torch.utils.tensorboard import SummaryWriter
 
 from model import DoctorNet
@@ -30,11 +29,11 @@ if __name__ == "__main__":
     cudnn.benchmark = False
 
     print('Loading train dataset...')
-    train_dataset = LabelMeDataset(args.train_dir, is_train=True)
+    train_dataset = LabelMeDataset(args.train_data, is_train=True)
     train_loader = DataLoader(dataset=train_dataset, batch_size=args.batch_size, shuffle=True)
 
     print('Loading validation dataset...')
-    valid_dataset = LabelMeDataset(args.valid_dir)
+    valid_dataset = LabelMeDataset(args.valid_data)
     valid_loader = DataLoader(dataset=valid_dataset, batch_size=args.batch_size)
 
     print('Building model...')
@@ -47,7 +46,7 @@ if __name__ == "__main__":
 
     print('Start DoctorNet training!')
     best_model = copy.deepcopy(model)
-    best_loss = 1e9
+    best_accuracy = 0
     writer = SummaryWriter(args.log_dir)
     for epoch in range(1, args.doctornet_epochs + 1):
         train_loss = 0.0
@@ -95,12 +94,14 @@ if __name__ == "__main__":
             writer.add_scalar('dn_train_accuracy', train_correct / len(train_dataset), epoch)
             writer.add_scalar('dn_valid_accuracy', valid_correct / len(valid_dataset), epoch)
 
-        if best_loss > train_loss:
-            best_model = model
+        if best_accuracy < valid_correct:
+            best_accuracy = valid_correct
             best_model = copy.deepcopy(model)
 
     model = best_model
-    print('\n\nStart DoctorNet Averaging Weight training!')
+    model.annotators.requires_grad = False
+    optimizer = Adam(model.parameters(), lr=args.lr / 10.0)
+    print('\n\nStart DoctorNet averaging weight training!')
     best_accuracy = 0
     for epoch in range(1, args.weight_epochs + 1):
         train_loss = 0.0
@@ -110,18 +111,27 @@ if __name__ == "__main__":
             model.zero_grad()
 
             x, y, annotation = x.to(args.device), y.to(args.device), annotation.to(args.device)
-            ann_out, cls_out = model(x, annotator)
+            decisions, weights = model(x, weight=True)
 
             # Calculate loss of annotators' labeling
-            ann_out = torch.reshape(ann_out, (-1, args.n_class))
-            annotation = annotation.view(-1)
-            loss = criterion(ann_out, annotation)
+            mask = annotation == -1
 
-            # Regularization term
-            confusion_matrices = model.noise_adaptation_layer
-            matrices = confusion_matrices.local_confusion_matrices - confusion_matrices.global_confusion_matrix
-            for matrix in matrices:
-                loss -= args.scale * torch.linalg.norm(matrix)
+            # onehot encode annotation
+            annotation = annotation + 1
+            annotation = F.one_hot(annotation)
+            annotation = annotation[:, :, 1:].float()
+            annotation = torch.mean(annotation, axis=1)
+            annotation = torch.argmax(annotation, dim=1)
+            
+            pred = torch.sum(decisions, axis=1)
+            decisions = decisions.masked_fill(mask[:, :, None], 0)
+            decisions = torch.sum(decisions, axis=1)
+
+            weights = weights.masked_fill(mask, 0)
+            weights = torch.sum(weights, axis=-1)
+
+            decisions = decisions / weights[:, None]
+            loss = criterion(decisions, annotation)
 
             # Update model weight using gradient descent
             loss.backward()
@@ -129,7 +139,7 @@ if __name__ == "__main__":
             train_loss += loss.item()
 
             # Calculate classifier accuracy
-            pred = torch.argmax(cls_out, dim=1)
+            pred = torch.argmax(pred, dim=1)
             train_correct += torch.sum(torch.eq(pred, y)).item()
 
         # Validation
@@ -138,12 +148,12 @@ if __name__ == "__main__":
             model.eval()
             for x, y in valid_loader:
                 x, y = x.to(args.device), y.to(args.device)
-                pred = model(x)
+                pred = model(x, pred=True, weight=True)
                 pred = torch.argmax(pred, dim=1)
                 valid_correct += torch.sum(torch.eq(pred, y)).item()
 
         print(
-            f'Epoch: {(epoch + 1):4d} | '
+            f'Epoch: {(epoch):4d} | '
             f'Train Loss: {train_loss:.3f} | '
             f'Train Accuracy: {(train_correct / len(train_dataset)):.2f} | '
             f'Valid Accuracy: {(valid_correct / len(valid_dataset)):.2f}'
@@ -151,9 +161,9 @@ if __name__ == "__main__":
 
         # Save tensorboard log
         if epoch % args.log_interval == 0:
-            writer.add_scalar('train_loss', train_loss, epoch)
-            writer.add_scalar('train_accuracy', train_correct / len(train_dataset), epoch)
-            writer.add_scalar('valid_accuracy', valid_correct / len(valid_dataset), epoch)
+            writer.add_scalar('aw_train_loss', train_loss, epoch)
+            writer.add_scalar('aw_train_accuracy', train_correct / len(train_dataset), epoch)
+            writer.add_scalar('aw_valid_accuracy', valid_correct / len(valid_dataset), epoch)
 
         # Save the model with highest accuracy on validation set
         if best_accuracy < valid_correct:
@@ -161,9 +171,7 @@ if __name__ == "__main__":
             checkpoint_dir = Path(args.save_dir)
             checkpoint_dir.mkdir(parents=True, exist_ok=True)
             torch.save({
-                'auxiliary_network': model.auxiliary_network.state_dict(),
-                'noise_adaptation_layer': model.noise_adaptation_layer.state_dict(),
-                'classifier': model.classifier.state_dict()
+                'model': model.state_dict()
             }, checkpoint_dir / 'best_model.pth')
 
             with open(checkpoint_dir / 'args.json', 'w') as f:
