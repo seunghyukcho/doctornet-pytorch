@@ -9,9 +9,13 @@ class FeatureExtractor(nn.Module):
         self.model = hub.load('pytorch/vision:v0.9.0', 'inception_v3', pretrained=True)
         self.model.fc = nn.Identity()
 
+        for param in self.model.parameters():
+            param.requires_grad = False
+
     def forward(self, x):
         feature = self.model(x)
-        feature = feature.logits
+        if self.training:
+            feature = feature.logits
         return feature
 
 
@@ -21,7 +25,7 @@ class AveragingWeights(nn.Module):
         super(AveragingWeights, self).__init__()
         self.weight_type = weight_type
         if self.weight_type == 'W':
-            self.weights = nn.Parameter(torch.randn(n_annotators), requires_grad=True)
+            self.weights = nn.Parameter(torch.ones(n_annotators), requires_grad=True)
         elif self.weight_type == 'I':
             if bottleneck_dim is None:
                 self.weights = nn.Linear(feature_dim, n_annotators)
@@ -56,13 +60,4 @@ class DoctorNet(nn.Module):
             return decisions
         else:
             return decisions, weights
-            # predictions = decisions * weights[None, :, None]
-
-            # predictions = predictions.masked_fill(~mask[:, :, None], 0)
-            # predictions = torch.sum(predictions, axis=1)
-
-            # weights = weights.masked_fill(~mask, 0)
-            # weights = torch.sum(weights, axis=-1)
-
-            # return predictions, weights
-
+ 
