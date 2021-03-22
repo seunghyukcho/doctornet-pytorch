@@ -37,3 +37,15 @@ def add_train_args(parser):
     group.add_argument('--log_dir', type=str, default='logs/',
             help="Folder going to save logs (Default: logs/).")
 
+
+def add_test_args(parser):
+    group = parser.add_argument_group('test')
+    group.add_argument('--batch_size', type=int, default=32,
+                       help="Number of instances in a batch (Default: 32).")
+    group.add_argument('--test_data', type=str,
+                       help="Root directory of test data.")
+    group.add_argument('--device', type=str, choices=['cpu', 'cuda'], default='cpu',
+                       help="Device going to use for training (Default: cpu).")
+    group.add_argument('--ckpt_dir', type=str,
+                       help="Directory which contains the checkpoint and args.json.")
+
