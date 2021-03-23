@@ -22,7 +22,7 @@ After the classifiers converged, we fix them and train weights used for averagin
 ### Testing
 Model | DoctorNet(paper)[1] | doctornet-pytorch
 --- | --- | --- 
-Accuracy | - | -
+Accuracy | 82.12 | 77.61
 
 ## 참조문헌
 [1] https://arxiv.org/abs/2012.13052
