@@ -42,13 +42,17 @@ if __name__ == "__main__":
 
     # Ignore annotators labeling which is -1
     criterion = nn.CrossEntropyLoss(ignore_index=-1, reduction='mean')
-    optimizer = Adam(model.parameters(), lr=args.lr)
+
+    # Freeze feature extractor
+    for param in model.feature_extractor.parameters():
+        param.requires_grad = False
+    optimizer_doctornet = Adam([model.annotators], lr=args.dn_lr, weight_decay=args.dn_l2)
 
     print('Start DoctorNet training!')
     best_model = copy.deepcopy(model)
     best_accuracy = 0
     writer = SummaryWriter(args.log_dir)
-    for epoch in range(1, args.doctornet_epochs + 1):
+    for epoch in range(1, args.dn_epochs + 1):
         train_loss = 0.0
         train_correct = 0
         model.train()
@@ -63,7 +67,7 @@ if __name__ == "__main__":
             loss = criterion(pred, annotation)
 
             loss.backward()
-            optimizer.step()
+            optimizer_doctornet.step()
             train_loss += loss.item()
 
             pred = pred.view(-1, args.n_annotators, args.n_classes)
@@ -98,12 +102,14 @@ if __name__ == "__main__":
             best_accuracy = valid_correct
             best_model = copy.deepcopy(model)
 
-    model = best_model
+    # Freeze DoctorNet
     model.annotators.requires_grad = False
-    optimizer = Adam(model.parameters(), lr=args.lr / 10.0)
+    optimizer_weight = Adam(model.weights.parameters(), lr=args.aw_lr, weight_decay=args.aw_l2)
+
     print('\n\nStart DoctorNet averaging weight training!')
+    model = best_model
     best_accuracy = 0
-    for epoch in range(1, args.weight_epochs + 1):
+    for epoch in range(1, args.aw_epochs + 1):
         train_loss = 0.0
         train_correct = 0
         model.train()
@@ -114,13 +120,13 @@ if __name__ == "__main__":
             decisions, weights = model(x, weight=True)
 
             # Calculate loss of annotators' labeling
-            mask = annotation == -1
+            mask = annotation != -1
 
-            # onehot encode annotation
+            # Calculate sum of one-hot encoded anotators' labels
             annotation = annotation + 1
             annotation = F.one_hot(annotation)
             annotation = annotation[:, :, 1:].float()
-            annotation = torch.mean(annotation, axis=1)
+            annotation = torch.sum(annotation, axis=1) / torch.sum((annotation != -1), axis=1)
             annotation = torch.argmax(annotation, dim=1)
             
             pred = torch.sum(decisions, axis=1)
@@ -133,12 +139,10 @@ if __name__ == "__main__":
             decisions = decisions / weights[:, None]
             loss = criterion(decisions, annotation)
 
-            # Update model weight using gradient descent
             loss.backward()
-            optimizer.step()
+            optimizer_weight.step()
             train_loss += loss.item()
 
-            # Calculate classifier accuracy
             pred = torch.argmax(pred, dim=1)
             train_correct += torch.sum(torch.eq(pred, y)).item()
 
